@@ -1,0 +1,97 @@
+version: '3.9'
+
+services:
+  # ── Qdrant Vector DB ────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: openclaw_qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"   # gRPC port
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend (FastAPI + SQLite) ───────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: openclaw_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///./openclaw.db}
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-openclaw_memories}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - JWT_SECRET=${JWT_SECRET:-dev-secret}
+    volumes:
+      - ./backend:/app       # hot-reload in dev
+      - backend_db:/app/data
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── AI Engine (FastAPI + Anthropic) ─────────────────────────
+  ai-engine:
+    build:
+      context: ./ai-engine
+      dockerfile: Dockerfile
+    container_name: openclaw_ai
+    ports:
+      - "9000:9000"
+    environment:
+      - BACKEND_URL=http://backend:8000
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-openclaw_memories}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - NOTION_TOKEN=${NOTION_TOKEN}
+      - SLACK_TOKEN=${SLACK_TOKEN}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - WHATSAPP_API_KEY=${WHATSAPP_API_KEY}
+      - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID}
+    volumes:
+      - ./ai-engine:/app     # hot-reload in dev
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Frontend (Next.js) ──────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: openclaw_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+      - NEXT_PUBLIC_AI_URL=http://ai-engine:9000
+    volumes:
+      - ./frontend:/app      # hot-reload in dev
+      - /app/node_modules    # preserve node_modules inside container
+    depends_on:
+      backend:
+        condition: service_healthy
+      ai-engine:
+        condition: service_healthy
+
+volumes:
+  qdrant_data:
+  backend_db:
